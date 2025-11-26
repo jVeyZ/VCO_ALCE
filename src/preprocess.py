@@ -14,8 +14,8 @@ DEFAULT_OUTPUT_DIR = BASE_DIR / "img" / "output"
 # A4 @ 300 DPI in portrait and landscape orientations.
 PORTRAIT_A4 = (2480, 3508)  # (width, height)
 LANDSCAPE_A4 = (3508, 2480)
-DOT_MIN_AREA = 60.0
-DOT_MAX_AREA = 6000.0
+DOT_MIN_AREA = 100.0
+DOT_MAX_AREA = 8000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +59,15 @@ def parse_args() -> argparse.Namespace:
 		"--show-results",
 		action="store_true",
 		help="Display the warped and binarized page before saving it.",
+	)
+	parser.add_argument(
+		"--pad-pixels",
+		type=int,
+		default=40,
+		help=(
+			"Add a constant white border (in pixels) before detecting calibration dots. "
+			"Use 0 to disable."
+		),
 	)
 	return parser.parse_args()
 
@@ -189,6 +198,23 @@ def compute_target_size(image_shape: Sequence[int], orientation: str) -> Tuple[i
 	return LANDSCAPE_A4 if width > height else PORTRAIT_A4
 
 
+def add_padding(image: np.ndarray, pad_pixels: int) -> np.ndarray:
+	if pad_pixels <= 0:
+		return image
+	border_value: Sequence[int] | int = [255, 255, 255]
+	if image.ndim == 2:
+		border_value = 255
+	return cv2.copyMakeBorder(
+		image,
+		pad_pixels,
+		pad_pixels,
+		pad_pixels,
+		pad_pixels,
+		cv2.BORDER_CONSTANT,
+		value=border_value,
+	)
+
+
 def warp_document(
 	image: np.ndarray, source_points: np.ndarray, target_size: Tuple[int, int]
 ) -> np.ndarray:
@@ -220,10 +246,12 @@ def process_image(
 	orientation: str,
 	show_dots: bool,
 	show_results: bool,
+	pad_pixels: int,
 ) -> Path:
 	image = cv2.imread(str(image_path))
 	if image is None:
 		raise RuntimeError(f"Could not read image: {image_path}")
+	image = add_padding(image, pad_pixels)
 	gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 	source_points = detect_calibration_dots(gray)
 	if show_dots:
@@ -264,6 +292,7 @@ def main() -> None:
 					args.orientation,
 					args.show_dots,
 					args.show_results,
+					args.pad_pixels,
 				)
 				print(f"Saved {output_path}")
 			except Exception as exc:  # noqa: BLE001 - keep processing other files
