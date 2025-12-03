@@ -8,13 +8,13 @@ import numpy as np
 
 #Work directory:
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT_DIR = BASE_DIR / "img" / "vco_test"
-DEFAULT_OUTPUT_DIR = BASE_DIR / "img" / "output"
+DEFAULT_INPUT_DIR = BASE_DIR / "img" / "preprocess_test"
+DEFAULT_OUTPUT_DIR = BASE_DIR / "img" / "preprocess_test" / "output"
 
 # A4 @ 300 DPI in portrait and landscape orientations.
 PORTRAIT_A4 = (2480, 3508)  # (width, height)
 LANDSCAPE_A4 = (3508, 2480)
-DOT_MIN_AREA = 100.0
+DOT_MIN_AREA = 80.0
 DOT_MAX_AREA = 8000.0
 
 
@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
 	parser.add_argument(
 		"--pad-pixels",
 		type=int,
-		default=40,
+		default=150,
 		help=(
 			"Add a constant white border (in pixels) before detecting calibration dots. "
 			"Use 0 to disable."

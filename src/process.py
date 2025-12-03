@@ -18,7 +18,7 @@ except ImportError as exc:  # pragma: no cover - optional dependency
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_INPUT_DIR = BASE_DIR / "img" / "output"
+DEFAULT_INPUT_DIR = BASE_DIR / "img" / "process_test"
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
 # Physical dimensions in centimeters for an A4 page.

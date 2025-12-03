@@ -1,1 +1,4 @@
 img/output/
+data/
+models/
+.DS_Store
