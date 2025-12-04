@@ -94,7 +94,7 @@ def load_cnn_model(model_path: Path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
     try:
         # Recreate the model architecture
-        from tensorflow.keras import layers, models
+        from tensorflow.keras import layers, models # type: ignore
         model = models.Sequential([
             layers.Input(shape=(28, 28, 1)),
             layers.Conv2D(32, (3, 3), activation='relu'),

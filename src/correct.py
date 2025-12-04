@@ -1,6 +1,6 @@
 import os
 import json
-import pandas as pd
+import pandas as pd # type: ignore
 from pathlib import Path
 from datetime import datetime
 
