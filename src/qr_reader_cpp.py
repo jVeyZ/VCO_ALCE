@@ -19,6 +19,7 @@ except ImportError as exc:  # pragma: no cover - handled at runtime
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = BASE_DIR / "img" / "output"
+DEFAULT_JSON_DIR = BASE_DIR / "img" / "output_json"
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 NUMBER_LABEL = "Número de preguntas"
 FILL_LABEL = "Preguntas de rellenar"
@@ -37,6 +38,14 @@ def parse_args() -> argparse.Namespace:
 		help=f"Directory with processed scans (default: {DEFAULT_INPUT_DIR})",
 	)
 	parser.add_argument(
+		"-o",
+		"--output-json-dir",
+		type=Path,
+		default=DEFAULT_JSON_DIR,
+		help=f"Directory to write decoded QR JSON files (default: {DEFAULT_JSON_DIR})",
+	)
+
+	parser.add_argument(
 		"-r",
 		"--recursive",
 		action="store_true",
@@ -48,12 +57,14 @@ def parse_args() -> argparse.Namespace:
 		action="store_true",
 		help="Only print files with at least one QR code detected.",
 	)
+	# Default: extract fields from QR payload
 	parser.add_argument(
-		"-e",
-		"--extract-fields",
-		action="store_true",
+		"--no-extract-fields",
+		action="store_false",
+		dest="extract_fields",
+		default=True,
 		help=(
-			"Parse the QR payload to extract the last two ';'-separated fields and label them."
+			"Disable parsing of the last two ';'-separated fields from the QR payload."
 		),
 	)
 	return parser.parse_args()
@@ -132,7 +143,46 @@ def build_payload_output(payload: str, extract_fields: bool) -> str:
 	)
 
 
-def scan_images(image_paths: Iterable[Path], extract_fields: bool) -> None:
+def save_results_json(image_path: Path, results: List, output_dir: Path, extract_fields: bool) -> None:
+	"""Save decoded QR results to a JSON file named after the image."""
+	try:
+		import json
+		output_dir.mkdir(parents=True, exist_ok=True)
+		data = {
+			"image": str(image_path),
+			"name": image_path.stem,
+			"results": [],
+		}
+		for result in results:
+			text = getattr(result, "text", "")
+			formatted = build_payload_output(text, extract_fields)
+			format_attr = getattr(result, "format", None)
+			format_name = getattr(format_attr, "name", str(format_attr)) if format_attr else "unknown"
+			# Structured parsing of last two fields when enabled
+			numeric_count = None
+			numeric_indices = None
+			if extract_fields:
+				parsed = extract_last_fields(normalize_payload(text))
+				if parsed:
+					num_field, fill_field = parsed
+					numeric_count = int(num_field) if num_field.isdigit() else None
+					# fill_field like "1,2,5" -> list[int]
+					numeric_indices = [int(x) for x in fill_field.split(",") if x.isdigit()]
+			data["results"].append({
+				"format": format_name,
+				"raw": normalize_payload(text),
+				"formatted": formatted,
+				"numeric_count": numeric_count,
+				"numeric_indices": numeric_indices,
+			})
+		out_path = output_dir / f"{image_path.stem}.json"
+		with open(out_path, "w", encoding="utf-8") as f:
+			json.dump(data, f, ensure_ascii=False, indent=2)
+	except Exception as exc:
+		print(f"[WARN] Failed to write JSON for {image_path}: {exc}")
+
+
+def scan_images(image_paths: Iterable[Path], extract_fields: bool, output_dir: Path) -> None:
 	for image_path in image_paths:
 		try:
 			results = decode_barcodes(image_path)
@@ -141,6 +191,8 @@ def scan_images(image_paths: Iterable[Path], extract_fields: bool) -> None:
 			continue
 		if not results:
 			print(f"{image_path}: no QR codes found")
+			# still write an empty file for traceability
+			save_results_json(image_path, [], output_dir, extract_fields)
 			continue
 		for result in results:
 			text = getattr(result, "text", "")
@@ -148,9 +200,11 @@ def scan_images(image_paths: Iterable[Path], extract_fields: bool) -> None:
 			format_attr = getattr(result, "format", None)
 			format_name = getattr(format_attr, "name", str(format_attr)) if format_attr else "unknown"
 			print(f"{image_path}: [{format_name}] {formatted_payload}")
+		# write JSON summary per image
+		save_results_json(image_path, results, output_dir, extract_fields)
 
 
-def scan_images_quiet(image_paths: Iterable[Path], extract_fields: bool) -> None:
+def scan_images_quiet(image_paths: Iterable[Path], extract_fields: bool, output_dir: Path) -> None:
 	for image_path in image_paths:
 		try:
 			results = decode_barcodes(image_path)
@@ -158,6 +212,8 @@ def scan_images_quiet(image_paths: Iterable[Path], extract_fields: bool) -> None
 			print(f"[WARN] {exc}")
 			continue
 		if not results:
+			# still write an empty file for traceability
+			save_results_json(image_path, [], output_dir, extract_fields)
 			continue
 		payloads = []
 		for result in results:
@@ -167,6 +223,8 @@ def scan_images_quiet(image_paths: Iterable[Path], extract_fields: bool) -> None
 			format_name = getattr(format_attr, "name", str(format_attr)) if format_attr else "unknown"
 			payloads.append(f"[{format_name}] {formatted_payload}")
 		print(f"{image_path}: {', '.join(payloads)}")
+		# write JSON summary per image
+		save_results_json(image_path, results, output_dir, extract_fields)
 
 
 def main() -> None:
@@ -183,9 +241,9 @@ def main() -> None:
 		)
 
 	if args.quiet:
-		scan_images_quiet(images, args.extract_fields)
+		scan_images_quiet(images, args.extract_fields, args.output_json_dir)
 	else:
-		scan_images(images, args.extract_fields)
+		scan_images(images, args.extract_fields, args.output_json_dir)
 
 
 if __name__ == "__main__":
