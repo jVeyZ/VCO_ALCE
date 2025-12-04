@@ -24,10 +24,16 @@ DEFAULT_QR_PATH = BASE_DIR / "img" / "qr_test"
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
 
 def load_qr_metadata(image_path: Path) -> Optional[dict]:
-    """Load QR metadata from JSON file in qr_test folder."""
+    """Load QR metadata from JSON file in qr_test folder.
+    Strips 'processed_' prefix from image stem if present to match original QR JSON files.
+    """
     try:
         import json
-        json_path = DEFAULT_QR_PATH / f"{image_path.stem}.json"
+        stem = image_path.stem
+        # Remove 'processed_' prefix if present
+        if stem.startswith("processed_"):
+            stem = stem[len("processed_"):]
+        json_path = DEFAULT_QR_PATH / f"{stem}.json"
         if json_path.exists():
             with open(json_path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -41,8 +47,9 @@ A4_HEIGHT_CM = 29.7
 
 # Bounding box coordinates in centimeters, top-left origin.
 BOUNDING_BOX_CM = (0.25, 8.45, 10.25, 9.90)  # (x1, y1, x2, y2)
-BOUNDING_BOX_QUESTIONS = (0.3, 12, 8, 24.5)  # (x1, y1, x2, y2)
-SIZEOF_QUESTION = (8, 1.4)
+START_ROW1 = (1.3, 11.6)
+START_ROW2 =(11.5, 11.6)
+SIZEOF_QUESTION = (9.5, 1.28)
 
 # EMNIST Mapping (0-9, A-Z)
 EMNIST_MAPPING = {
@@ -314,120 +321,208 @@ def predict_chars_constrained(model, chars_data: List[Tuple[np.ndarray, float]])
             
     return result
 
-def segment_questions(image, image_path: Path, show_debug=False) -> List[np.ndarray]:
-    """Segment individual questions from the answer area.
-    Assumes there are 13 questions per vertical column, and two side-by-side columns.
-    Uses centimeter sizes to compute pixel slicing based on the original image dimensions.
+def predict_multiple_choice_answer(question_box: np.ndarray) -> str:
+    """Determine multiple choice answer (A, B, C, or D) by counting black pixels in each quarter.
+    The question box is divided into 4 equal horizontal sections (A, B, C, D from left to right).
+    Requires at least 40% of the section to be filled for a valid answer.
     """
-    # Crop the questions bounding box
-    questions_roi = crop_physical_roi(image, BOUNDING_BOX_QUESTIONS)
+    gray = cv2.cvtColor(question_box, cv2.COLOR_BGR2GRAY) if question_box.ndim == 3 else question_box
+    
+    # Threshold to get black pixels (marks)
+    _, thresh = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY_INV)
+    
+    # Divide into 4 equal horizontal sections
+    height, width = thresh.shape
+    section_width = width // 4
+    
+    black_counts = []
+    section_areas = []
+    for i in range(4):
+        x_start = i * section_width
+        x_end = (i + 1) * section_width if i < 3 else width
+        section = thresh[:, x_start:x_end]
+        black_count = np.count_nonzero(section)
+        section_area = section.size
+        black_counts.append(black_count)
+        section_areas.append(section_area)
+    
+    # Find the section with most black pixels
+    max_idx = np.argmax(black_counts)
+    answers = ['A', 'B', 'C', 'D']
+    
+    # Calculate percentage of section that is filled
+    fill_percentage = (black_counts[max_idx] / section_areas[max_idx]) * 100 if section_areas[max_idx] > 0 else 0
+    
+    # Only return answer if at least 40% of the section is filled
+    if fill_percentage >= 10:
+        return answers[max_idx]
+    return ""
 
-    roi_height, roi_width = questions_roi.shape[:2]
+
+def predict_numeric_answer(model, question_box: np.ndarray, show_debug=False) -> str:
+    """Extract and recognize digits from a numeric answer question box."""
+    binary, scaled_gray = preprocess_roi_for_segmentation(question_box)
+    chars = segment_characters(binary, scaled_gray, show_debug=show_debug)
+    
+    if not chars:
+        return ""
+    
+    # For numeric answers, all characters should be digits
+    chars_data = [c[0] for c in chars]
+    ratios = [c[1] for c in chars]
+    
+    batch = np.array(chars_data).reshape(-1, 28, 28, 1)
+    preds = model.predict(batch, verbose=0)
+    
+    result = ""
+    for i, pred in enumerate(preds):
+        ratio = ratios[i]
+        # Consider only digits 0-9 (indices 0-9)
+        digit_score = pred[:10]
+        idx = np.argmax(digit_score)
+        char = EMNIST_MAPPING.get(idx, '?')
+        
+        # Heuristic: '1' vs '7'
+        if char == '7' and ratio < 0.5:
+            char = '1'
+            
+        result += char
+    
+    return result
+
+def segment_questions(image, image_path: Path, show_debug=False) -> Tuple[List[np.ndarray], List[int]]:
+    """Segment individual questions from the answer area.
+    Uses total question count from QR metadata to determine segmentation.
+    Row 1 (left column, vertical) has max 13 questions, Row 2 (right column, vertical) has remainder.
+    Returns tuple of (question_boxes, numeric_question_indices).
+    """
     img_height, img_width = image.shape[:2]
     question_width_cm, question_height_cm = SIZEOF_QUESTION
 
-    # Convert centimeter sizes to pixels using original image dimensions
+    # Convert centimeter sizes to pixels using image dimensions
     question_width_px = int((question_width_cm / A4_WIDTH_CM) * img_width)
     question_height_px = int((question_height_cm / A4_HEIGHT_CM) * img_height)
 
-    # Two columns (left and right) within the questions ROI.
-    # Place left column at the left edge, and right column aligned to the right edge
-    # using the known question box width in pixels.
-    left_x_start = 0
-    left_x_end = min(question_width_px, roi_width)
-    # Move one question-width to the right for the second column
-    right_x_start = min(question_width_px, roi_width)
-    right_x_end = min(question_width_px * 2, roi_width)
-
-    # 13 questions per column (vertical)
-    num_per_column = 13
-    
-    # Load QR metadata to determine numeric/multiple-choice questions
+    # Load QR metadata to determine total questions and question types
     qr_metadata = load_qr_metadata(image_path)
+    total_questions = 26  # Default to 26 (13 per column)
     numeric_indices = set()
+    
     if qr_metadata and qr_metadata.get("results"):
         first_result = qr_metadata["results"][0]
-        if "numeric_indices" in first_result:
-            numeric_indices = set(first_result["numeric_indices"])
-
-    def is_mostly_blank(box: np.ndarray) -> bool:
-        gray = cv2.cvtColor(box, cv2.COLOR_BGR2GRAY) if box.ndim == 3 else box
-        # Threshold to highlight marks
-        thr = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C,
-                                    cv2.THRESH_BINARY_INV, 11, 2)
-        nonzero = np.count_nonzero(thr)
-        ratio = nonzero / float(thr.size)
-        return ratio < 0.005  # less than 0.5% ink -> mostly blank
+        # Parse QR raw data: version;id;school;date;letter;num_questions;total_questions;numeric_indices
+        if "raw" in first_result:
+            try:
+                raw_str = first_result["raw"]
+                parts = raw_str.split(";")
+                if len(parts) > 6:
+                    total_questions = int(parts[6])
+                if len(parts) > 7:
+                    # Parse comma-separated numeric indices
+                    numeric_str = parts[7].strip()
+                    if numeric_str:
+                        numeric_indices = set(int(x.strip()) for x in numeric_str.split(","))
+            except (ValueError, IndexError, AttributeError):
+                pass
 
     collected = []
     idx = 0
+    
+    # Determine how many questions go in each column (max 13 per column)
+    col1_count = min(13, total_questions)
+    col2_count = max(0, total_questions - 13)
 
-    # Pass 1: Top-to-bottom for LEFT column
-    for row in range(num_per_column):
-        y_start = int(row * question_height_px)
-        y_end = int((row + 1) * question_height_px)
-
-        if y_start >= roi_height:
-            break
-        y_end = min(y_end, roi_height)
-
-        left_box = questions_roi[y_start:y_end, left_x_start:left_x_end]
-        if left_box.size > 0:
+    # COLUMN 1: Start at START_ROW1, go vertically top to bottom
+    col1_x_start, col1_y_start = START_ROW1
+    col1_x_start_px = int((col1_x_start / A4_WIDTH_CM) * img_width)
+    col1_y_start_px = int((col1_y_start / A4_HEIGHT_CM) * img_height)
+    
+    for row in range(col1_count):
+        x_start = col1_x_start_px
+        y_start = col1_y_start_px + row * question_height_px
+        x_end = x_start + question_width_px
+        y_end = y_start + question_height_px
+        
+        # Clamp to image bounds
+        x_start = max(0, min(x_start, img_width))
+        x_end = max(0, min(x_end, img_width))
+        y_start = max(0, min(y_start, img_height))
+        y_end = max(0, min(y_end, img_height))
+        
+        if x_end > x_start and y_end > y_start:
+            question_box = image[y_start:y_end, x_start:x_end]
             idx += 1
-            if is_mostly_blank(left_box):
-                print(f"[INFO] Question {idx} (left row {row+1}) is blank. Skipping.")
-            else:
-                # Determine question type
-                q_type = "numeric" if idx in numeric_indices else "multiple-choice"
-                print(f"[INFO] Question {idx} (left row {row+1}): {q_type}")
-                collected.append(left_box)
-                if show_debug:
-                    # Scale for display to ensure visibility regardless of row/column
-                    disp = cv2.resize(left_box, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-                    cv2.imshow(f"Question {idx}", disp)
-                    key = cv2.waitKey(0) & 0xFF
-                    cv2.destroyWindow(f"Question {idx}")
-                    if key in (27, ord("q")):
-                        break
+            q_type = "numeric" if idx in numeric_indices else "multiple-choice"
+            print(f"[INFO] Question {idx} (col 1, row {row+1}): {q_type}")
+            collected.append(question_box)
+            if show_debug:
+                disp = cv2.resize(question_box, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+                cv2.imshow(f"Question {idx}", disp)
+                key = cv2.waitKey(0) & 0xFF
+                cv2.destroyWindow(f"Question {idx}")
+                if key in (27, ord("q")):
+                    break
 
-    # Pass 2: Top-to-bottom for RIGHT column
-    for row in range(num_per_column):
-        y_start = int(row * question_height_px)
-        y_end = int((row + 1) * question_height_px)
-
-        if y_start >= roi_height:
-            break
-        y_end = min(y_end, roi_height)
-
-        right_box = questions_roi[y_start:y_end, right_x_start:right_x_end]
-        if right_box.size > 0:
+    # COLUMN 2: Start at START_ROW2, go vertically top to bottom
+    col2_x_start, col2_y_start = START_ROW2
+    col2_x_start_px = int((col2_x_start / A4_WIDTH_CM) * img_width)
+    col2_y_start_px = int((col2_y_start / A4_HEIGHT_CM) * img_height)
+    
+    for row in range(col2_count):
+        x_start = col2_x_start_px
+        y_start = col2_y_start_px + row * question_height_px
+        x_end = x_start + question_width_px
+        y_end = y_start + question_height_px
+        
+        # Clamp to image bounds
+        x_start = max(0, min(x_start, img_width))
+        x_end = max(0, min(x_end, img_width))
+        y_start = max(0, min(y_start, img_height))
+        y_end = max(0, min(y_end, img_height))
+        
+        if x_end > x_start and y_end > y_start:
+            question_box = image[y_start:y_end, x_start:x_end]
             idx += 1
-            if is_mostly_blank(right_box):
-                print(f"[INFO] Question {idx} (right row {row+1}) is blank. Skipping.")
-            else:
-                # Determine question type
-                q_type = "numeric" if idx in numeric_indices else "multiple-choice"
-                print(f"[INFO] Question {idx} (right row {row+1}): {q_type}")
-                collected.append(right_box)
-                if show_debug:
-                    # Scale for display to ensure visibility for second column items
-                    disp = cv2.resize(right_box, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
-                    cv2.imshow(f"Question {idx}", disp)
-                    key = cv2.waitKey(0) & 0xFF
-                    cv2.destroyWindow(f"Question {idx}")
-                    if key in (27, ord("q")):
-                        break
+            q_type = "numeric" if idx in numeric_indices else "multiple-choice"
+            print(f"[INFO] Question {idx} (col 2, row {row+1}): {q_type}")
+            collected.append(question_box)
+            if show_debug:
+                disp = cv2.resize(question_box, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+                cv2.imshow(f"Question {idx}", disp)
+                key = cv2.waitKey(0) & 0xFF
+                cv2.destroyWindow(f"Question {idx}")
+                if key in (27, ord("q")):
+                    break
 
-    return collected
+    return collected, list(numeric_indices)
 
 def process_image(image_path: Path, model, show_roi: bool, show_questions: bool = False) -> None:
+    import json
+    
     image = load_image(image_path)
     
-    if show_questions:
-        questions = segment_questions(image, image_path, show_debug=True)
-        print(f"{image_path.name}: Segmented {len(questions)} questions.")
-        return
+    # Always segment and process questions
+    question_boxes, numeric_indices = segment_questions(image, image_path, show_debug=show_questions)
+    print(f"\n{image_path.name}: Segmented {len(question_boxes)} questions.")
     
+    # Collect all answers
+    answers = {}
+    
+    # Process all questions
+    print(f"\nQuestion answers:")
+    for idx, question_box in enumerate(question_boxes, start=1):
+        if idx in numeric_indices:
+            # Numeric question
+            answer = predict_numeric_answer(model, question_box, show_debug=False)
+            answers[str(idx)] = answer if answer else ""
+            print(f"  Question {idx} (numeric): {answer if answer else '(no answer detected)'}")
+        else:
+            # Multiple choice question
+            answer = predict_multiple_choice_answer(question_box)
+            answers[str(idx)] = answer if answer else ""
+            print(f"  Question {idx} (multiple choice): {answer if answer else '(no answer detected)'}")
+    
+    # Also process DNI
     roi = crop_physical_roi(image, BOUNDING_BOX_CM)
     
     if show_roi:
@@ -440,22 +535,44 @@ def process_image(image_path: Path, model, show_roi: bool, show_questions: bool 
     binary, scaled_gray = preprocess_roi_for_segmentation(roi)
     chars = segment_characters(binary, scaled_gray, show_debug=show_roi)
     
+    dni_code = ""
     if not chars:
-        print(f"{image_path.name}: No characters found.")
-        return
-
-    # We expect 9 characters. If we found more or less, we might warn.
-    if len(chars) != 9:
-        print(f"{image_path.name}: [WARN] Found {len(chars)} characters, expected 9.")
-    
-    code = predict_chars_constrained(model, chars)
-    
-    # Validate pattern
-    match = re.match(r"^\d{8}[A-Z]$", code)
-    if match:
-        print(f"{image_path.name}: code={code}")
+        print(f"{image_path.name}: No DNI characters found.")
     else:
-        print(f"{image_path.name}: code={code} (Pattern mismatch)")
+        # We expect 9 characters. If we found more or less, we might warn.
+        if len(chars) != 9:
+            print(f"{image_path.name}: [WARN] Found {len(chars)} characters, expected 9.")
+        
+        dni_code = predict_chars_constrained(model, chars)
+        
+        # Validate pattern
+        match = re.match(r"^\d{8}[A-Z]$", dni_code)
+        if match:
+            print(f"{image_path.name}: DNI={dni_code}")
+        else:
+            print(f"{image_path.name}: DNI={dni_code} (Pattern mismatch)")
+    
+    # Save results to JSON
+    output_data = {
+        "image": str(image_path),
+        "name": image_path.name,
+        "dni": dni_code,
+        "answers": answers
+    }
+    
+    # Determine output filename (strip 'processed_' prefix if present)
+    stem = image_path.stem
+    if stem.startswith("processed_"):
+        stem = stem[len("processed_"):]
+    
+    output_json_path = BASE_DIR / "img" / "json_test" / f"{stem}_answers.json"
+    output_json_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    with open(output_json_path, "w", encoding="utf-8") as f:
+        json.dump(output_data, f, indent=2, ensure_ascii=False)
+    
+    print(f"\nResults saved to: {output_json_path}")
+
 
 def main() -> None:
     args = parse_args()
