@@ -552,11 +552,36 @@ def process_image(image_path: Path, model, show_roi: bool, show_questions: bool 
         else:
             print(f"{image_path.name}: DNI={dni_code} (Pattern mismatch)")
     
+    # Extract QR metadata for exam information
+    qr_data = load_qr_metadata(image_path)
+    exam_info = {}
+    
+    if qr_data and qr_data.get("results"):
+        try:
+            first_result = qr_data["results"][0]
+            if "raw" in first_result:
+                raw_str = first_result["raw"]
+                parts = raw_str.split(";")
+                # Parse: version;id;school;date;letter;num_questions;total_questions;numeric_indices
+                if len(parts) >= 5:
+                    exam_info["version"] = parts[0]
+                    exam_info["exam_id"] = parts[1]
+                    exam_info["school"] = parts[2]
+                    exam_info["date"] = parts[3]
+                    exam_info["revision"] = parts[4]
+                if len(parts) > 5:
+                    exam_info["num_questions"] = int(parts[5])
+                if len(parts) > 6:
+                    exam_info["total_questions"] = int(parts[6])
+        except (ValueError, IndexError, AttributeError):
+            pass
+    
     # Save results to JSON
     output_data = {
         "image": str(image_path),
         "name": image_path.name,
         "dni": dni_code,
+        "exam": exam_info,
         "answers": answers
     }
     

@@ -183,6 +183,21 @@ app.post('/api/generate-answer-sheet', async (req, res) => {
     const html = await buildTemplateHtml(blueprint, variantLabel);
     const pdfBuffer = await renderPdf(html);
     const fileName = `${sanitizeFileName(blueprint.subject?.code || 'exam')}-${sanitizeFileName(variantLabel)}.pdf`;
+    
+    // Save answer key JSON to answer_key folder using exam ID as filename
+    const answerKeyDir = path.join(__dirnameResolved, 'answer_key');
+    try {
+      await fs.mkdir(answerKeyDir, { recursive: true });
+    } catch (e) {
+      console.warn('Could not create answer_key directory:', e);
+    }
+    
+    const examId = blueprint?.subject?.code || 'exam';
+    const jsonFileName = `${sanitizeFileName(examId)}.json`;
+    const jsonFilePath = path.join(answerKeyDir, jsonFileName);
+    await fs.writeFile(jsonFilePath, JSON.stringify(blueprint, null, 2), 'utf8');
+    console.log(`Answer key saved: ${jsonFilePath}`);
+    
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     return res.send(pdfBuffer);

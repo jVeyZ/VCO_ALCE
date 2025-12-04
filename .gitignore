@@ -6,5 +6,9 @@ src/__pycache__/
 img/process_test/
 img/qr_test/
 img/json_test/
+img/
+
+output/
 
 frontend/node_modules/
+frontend/answer_key/
