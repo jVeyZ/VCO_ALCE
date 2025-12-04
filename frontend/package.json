@@ -1,0 +1,19 @@
+{
+  "name": "vco-template-generator",
+  "version": "1.0.0",
+  "description": "Exam setup assistant with PDF answer sheet generator",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "puppeteer": "^22.7.1",
+    "qrcode": "^1.5.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
+  }
+}

@@ -3,3 +3,7 @@ data/
 models/
 .DS_Store
 src/__pycache__/
+img/process_test/
+img/qr_test/
+
+frontend/node_modules/

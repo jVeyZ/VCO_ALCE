@@ -9,7 +9,7 @@ import numpy as np
 #Work directory:
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = BASE_DIR / "img" / "preprocess_test"
-DEFAULT_OUTPUT_DIR = BASE_DIR / "img" / "preprocess_test" / "output"
+DEFAULT_OUTPUT_DIR = BASE_DIR / "img" / "process_test"
 
 # A4 @ 300 DPI in portrait and landscape orientations.
 PORTRAIT_A4 = (2480, 3508)  # (width, height)

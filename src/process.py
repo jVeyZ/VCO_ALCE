@@ -20,7 +20,20 @@ except ImportError as exc:
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = BASE_DIR / "img" / "process_test"
 DEFAULT_MODEL_PATH = BASE_DIR / "models" / "emnist_model.h5"
+DEFAULT_QR_PATH = BASE_DIR / "img" / "qr_test"
 SUPPORTED_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+
+def load_qr_metadata(image_path: Path) -> Optional[dict]:
+    """Load QR metadata from JSON file in qr_test folder."""
+    try:
+        import json
+        json_path = DEFAULT_QR_PATH / f"{image_path.stem}.json"
+        if json_path.exists():
+            with open(json_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"[WARN] Failed to load QR metadata for {image_path.stem}: {e}")
+    return None
 
 # Physical dimensions in centimeters for an A4 page.
 A4_WIDTH_CM = 21.0
@@ -301,7 +314,7 @@ def predict_chars_constrained(model, chars_data: List[Tuple[np.ndarray, float]])
             
     return result
 
-def segment_questions(image, show_debug=False) -> List[np.ndarray]:
+def segment_questions(image, image_path: Path, show_debug=False) -> List[np.ndarray]:
     """Segment individual questions from the answer area.
     Assumes there are 13 questions per vertical column, and two side-by-side columns.
     Uses centimeter sizes to compute pixel slicing based on the original image dimensions.
@@ -328,6 +341,14 @@ def segment_questions(image, show_debug=False) -> List[np.ndarray]:
 
     # 13 questions per column (vertical)
     num_per_column = 13
+    
+    # Load QR metadata to determine numeric/multiple-choice questions
+    qr_metadata = load_qr_metadata(image_path)
+    numeric_indices = set()
+    if qr_metadata and qr_metadata.get("results"):
+        first_result = qr_metadata["results"][0]
+        if "numeric_indices" in first_result:
+            numeric_indices = set(first_result["numeric_indices"])
 
     def is_mostly_blank(box: np.ndarray) -> bool:
         gray = cv2.cvtColor(box, cv2.COLOR_BGR2GRAY) if box.ndim == 3 else box
@@ -356,6 +377,9 @@ def segment_questions(image, show_debug=False) -> List[np.ndarray]:
             if is_mostly_blank(left_box):
                 print(f"[INFO] Question {idx} (left row {row+1}) is blank. Skipping.")
             else:
+                # Determine question type
+                q_type = "numeric" if idx in numeric_indices else "multiple-choice"
+                print(f"[INFO] Question {idx} (left row {row+1}): {q_type}")
                 collected.append(left_box)
                 if show_debug:
                     # Scale for display to ensure visibility regardless of row/column
@@ -381,6 +405,9 @@ def segment_questions(image, show_debug=False) -> List[np.ndarray]:
             if is_mostly_blank(right_box):
                 print(f"[INFO] Question {idx} (right row {row+1}) is blank. Skipping.")
             else:
+                # Determine question type
+                q_type = "numeric" if idx in numeric_indices else "multiple-choice"
+                print(f"[INFO] Question {idx} (right row {row+1}): {q_type}")
                 collected.append(right_box)
                 if show_debug:
                     # Scale for display to ensure visibility for second column items
@@ -397,7 +424,7 @@ def process_image(image_path: Path, model, show_roi: bool, show_questions: bool 
     image = load_image(image_path)
     
     if show_questions:
-        questions = segment_questions(image, show_debug=True)
+        questions = segment_questions(image, image_path, show_debug=True)
         print(f"{image_path.name}: Segmented {len(questions)} questions.")
         return
     
