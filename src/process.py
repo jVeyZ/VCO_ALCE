@@ -47,9 +47,9 @@ A4_HEIGHT_CM = 29.7
 
 # Bounding box coordinates in centimeters, top-left origin.
 BOUNDING_BOX_CM = (0.25, 8.45, 10.25, 9.90)  # (x1, y1, x2, y2)
-START_ROW1 = (1.3, 11.6)
-START_ROW2 =(11.5, 11.6)
-SIZEOF_QUESTION = (9.5, 1.28)
+START_ROW1 = (1.6, 11.6)
+START_ROW2 =(11.6, 11.6)
+SIZEOF_QUESTION = (9.5, 1.26)
 
 # EMNIST Mapping (0-9, A-Z)
 EMNIST_MAPPING = {
@@ -285,41 +285,17 @@ def segment_characters(binary_image, original_gray, show_debug=False) -> List[Tu
 def predict_chars_constrained(model, chars_data: List[Tuple[np.ndarray, float]]) -> str:
     if not chars_data:
         return ""
-    
+
     chars = [c[0] for c in chars_data]
-    ratios = [c[1] for c in chars_data]
-    
-    # Batch prediction
     batch = np.array(chars).reshape(-1, 28, 28, 1)
     preds = model.predict(batch, verbose=0)
-    
-    result = ""
-    for i, pred in enumerate(preds):
-        ratio = ratios[i]
-        if i < 8: # First 8 are digits
-            # Consider only digits 0-9 (indices 0-9)
-            digit_score = pred[:10]
-            idx = np.argmax(digit_score)
-            char = EMNIST_MAPPING.get(idx, '?')
-            
-            # Heuristic: '1' vs '7'
-            # If predicted '7' but very thin, it's likely '1'
-            # Threshold determined empirically: '7' ratio ~0.57, '1' ratio ~0.45
-            if char == '7' and ratio < 0.5:
-                char = '1'
-                
-            result += char
-        elif i == 8: # 9th character is a letter
-            # Consider only letters A-Z (indices 10-35)
-            letter_score = pred[10:36]
-            idx = np.argmax(letter_score) + 10
-            result += EMNIST_MAPPING.get(idx, '?')
-        else:
-            # Extra characters? Just predict normally or ignore
-            idx = np.argmax(pred)
-            result += EMNIST_MAPPING.get(idx, '?')
-            
-    return result
+
+    decoded = []
+    for pred in preds:
+        idx = int(np.argmax(pred))
+        decoded.append(EMNIST_MAPPING.get(idx, '?'))
+
+    return "".join(decoded)
 
 def predict_multiple_choice_answer(question_box: np.ndarray) -> str:
     """Determine multiple choice answer (A, B, C, or D) by counting black pixels in each quarter.
