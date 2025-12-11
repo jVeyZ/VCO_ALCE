@@ -343,28 +343,16 @@ def predict_numeric_answer(model, question_box: np.ndarray, show_debug=False) ->
     if not chars:
         return ""
     
-    # For numeric answers, all characters should be digits
     chars_data = [c[0] for c in chars]
-    ratios = [c[1] for c in chars]
-    
     batch = np.array(chars_data).reshape(-1, 28, 28, 1)
     preds = model.predict(batch, verbose=0)
-    
-    result = ""
-    for i, pred in enumerate(preds):
-        ratio = ratios[i]
-        # Consider only digits 0-9 (indices 0-9)
-        digit_score = pred[:10]
-        idx = np.argmax(digit_score)
-        char = EMNIST_MAPPING.get(idx, '?')
-        
-        # Heuristic: '1' vs '7'
-        if char == '7' and ratio < 0.5:
-            char = '1'
-            
-        result += char
-    
-    return result
+
+    digits = []
+    for pred in preds:
+        digit_idx = int(np.argmax(pred[:10]))
+        digits.append(EMNIST_MAPPING.get(digit_idx, '?'))
+
+    return "".join(digits)
 
 def segment_questions(image, image_path: Path, show_debug=False) -> Tuple[List[np.ndarray], List[int]]:
     """Segment individual questions from the answer area.
@@ -489,7 +477,12 @@ def process_image(image_path: Path, model, show_roi: bool, show_questions: bool 
     for idx, question_box in enumerate(question_boxes, start=1):
         if idx in numeric_indices:
             # Numeric question
-            answer = predict_numeric_answer(model, question_box, show_debug=False)
+            if show_roi:
+                preview = cv2.resize(question_box, None, fx=1.5, fy=1.5, interpolation=cv2.INTER_CUBIC)
+                cv2.imshow(f"numeric_roi::{image_path.name}::{idx}", preview)
+                cv2.waitKey(0)
+                cv2.destroyWindow(f"numeric_roi::{image_path.name}::{idx}")
+            answer = predict_numeric_answer(model, question_box, show_debug=show_roi)
             answers[str(idx)] = answer if answer else ""
             print(f"  Question {idx} (numeric): {answer if answer else '(no answer detected)'}")
         else:
