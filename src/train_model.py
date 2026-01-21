@@ -19,20 +19,12 @@ def load_data(batch_size=64):
     ds_train, ds_test = tfds.load('emnist/balanced', split=['train', 'test'], as_supervised=True, shuffle_files=True)
     
     def preprocess(image, label):
-        # EMNIST images in TFDS are rotated 90 degrees and flipped.
-        # We need to transpose them to match standard orientation if we want to visualize,
-        # but for training, as long as inference does the same, it's fine.
-        # However, our inference code (processV2.py) uses standard OpenCV images (upright).
-        # So we MUST transpose the training images to match upright orientation.
-        # EMNIST mapping: 
-        # The images are flipped and rotated.
-        # Usually: tf.transpose(image, perm=[1, 0, 2])
         
         image = tf.transpose(image, perm=[1, 0, 2])
         image = tf.cast(image, tf.float32) / 255.0
         return image, label
 
-    # Simple augmentation pipeline (applied only to training)
+
     # Default AUGMENT=0 (off) because heavy augmentation reduced peak val accuracy in earlier experiments.
     AUGMENT = os.environ.get('AUGMENT', '0') not in ('0', 'false', 'False')
     if AUGMENT:
@@ -62,7 +54,6 @@ def create_model():
     l2_coef = float(os.environ.get('L2_COEF', '1e-4'))
     dropout_rate = float(os.environ.get('DROPOUT', '0.3'))
 
-    # We need to handle 47 classes for 'balanced'
     model = models.Sequential([
         layers.Input(shape=(28,28,1)),
         layers.Conv2D(32, (3, 3), activation=None, kernel_regularizer=regularizers.l2(l2_coef)),
@@ -101,11 +92,11 @@ def main():
     
     model = create_model()
     
-    # Print hyperparameters for transparency
+    # Print params
     augment_flag = os.environ.get('AUGMENT', '0') not in ('0', 'false', 'False')
     print(f"Config: AUGMENT={augment_flag}, DROPOUT={os.environ.get('DROPOUT', '0.3')}, L2_COEF={os.environ.get('L2_COEF', '1e-4')}, BATCH_SIZE={batch_size}, EPOCHS={epochs}")
 
-    # Callbacks to prevent/mitigate overfitting and help training
+    # Model backup callback
     checkpoint_path = MODEL_DIR / "best_emnist_model.h5"
     es = EarlyStopping(monitor='val_loss', patience=3, restore_best_weights=True)
     rlrop = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=1e-6, verbose=1)
@@ -115,7 +106,7 @@ def main():
     print("Training model...")
     history = model.fit(ds_train, epochs=epochs, validation_data=ds_test, callbacks=callbacks)
     
-    # Save final model (best weights restored by EarlyStopping)
+    # Save final model (best weights)
     print(f"Saving model to {MODEL_PATH}...")
     model.save(str(MODEL_PATH))
     print(f"Best checkpoint saved to {checkpoint_path}")

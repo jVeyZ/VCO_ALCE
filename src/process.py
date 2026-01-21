@@ -158,12 +158,7 @@ def preprocess_roi_for_segmentation(roi):
 
 def segment_characters(binary_image, original_gray, show_debug=False) -> List[Tuple[np.ndarray, float]]:
     contours, _ = cv2.findContours(binary_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
     height, width = binary_image.shape
-    
-    # Heuristics for character dimensions
-    # Assuming the ROI contains mostly the ID code
-    # Characters should be roughly same height
     
     char_candidates = []
     for cnt in contours:
@@ -191,7 +186,6 @@ def segment_characters(binary_image, original_gray, show_debug=False) -> List[Tu
         for x, y, w, h in char_candidates:
             # If width is more than 1.8x median, it might be two characters merged
             if w > median_w * 1.8:
-                # Split in half
                 half_w = w // 2
                 final_candidates.append((x, y, half_w, h))
                 final_candidates.append((x + half_w, y, w - half_w, h))
@@ -199,20 +193,10 @@ def segment_characters(binary_image, original_gray, show_debug=False) -> List[Tu
                 final_candidates.append((x, y, w, h))
         char_candidates = final_candidates
 
-    # If we have more than 9, try to filter out the least likely ones (e.g. smallest area or furthest from center)
+    # If we have more than 9, try to filter out the least likely ones
     if len(char_candidates) > 9:
-        # Sort by area (descending) and take top 9? No, '1' has small area.
-        # Sort by distance from center?
-        # Let's assume the 9 characters are the most prominent ones.
-        # Maybe filter by height consistency?
         median_h = np.median([c[3] for c in char_candidates])
-        # Filter out those with height significantly different from median
         char_candidates = [c for c in char_candidates if abs(c[3] - median_h) < median_h * 0.3]
-        
-        # If still > 9, maybe sort by X and take the middle ones? 
-        # Or just take the 9 with best aspect ratio?
-        # For now, let's just take the first 9 if they are sorted by X, assuming noise is at the ends?
-        # But noise could be in between.
         pass
 
     chars = []
@@ -252,15 +236,7 @@ def segment_characters(binary_image, original_gray, show_debug=False) -> List[Tu
         shift_x = 14 - cX
         shift_y = 14 - cY
         
-        # Calculate top-left coordinates on canvas
-        # We want the image to be placed such that its center of mass is at 14,14
-        # But we also need to ensure it stays within bounds.
-        # Actually, standard MNIST preprocessing centers the bounding box (20x20) in the 28x28 field by center of mass.
-        # But simpler approach: Center the bounding box geometrically, then shift by CoM?
-        # Let's stick to geometric centering for now, but maybe add a small border.
-        # The previous code did geometric centering.
-        
-        # Let's try geometric centering first, but ensure the aspect ratio is handled well.
+        # Calculate offsets to place resized image in canvas
         y_off = (28 - new_h) // 2
         x_off = (28 - new_w) // 2
         canvas[y_off:y_off+new_h, x_off:x_off+new_w] = resized
@@ -298,10 +274,7 @@ def predict_chars_constrained(model, chars_data: List[Tuple[np.ndarray, float]])
     return "".join(decoded)
 
 def predict_multiple_choice_answer(question_box: np.ndarray) -> str:
-    """Determine multiple choice answer (A, B, C, or D) by counting black pixels in each quarter.
-    The question box is divided into 4 equal horizontal sections (A, B, C, D from left to right).
-    Requires at least 40% of the section to be filled for a valid answer.
-    """
+    """Predict multiple-choice answer from a question box image."""
     gray = cv2.cvtColor(question_box, cv2.COLOR_BGR2GRAY) if question_box.ndim == 3 else question_box
     
     # Threshold to get black pixels (marks)
@@ -355,11 +328,7 @@ def predict_numeric_answer(model, question_box: np.ndarray, show_debug=False) ->
     return "".join(digits)
 
 def segment_questions(image, image_path: Path, show_debug=False) -> Tuple[List[np.ndarray], List[int]]:
-    """Segment individual questions from the answer area.
-    Uses total question count from QR metadata to determine segmentation.
-    Row 1 (left column, vertical) has max 13 questions, Row 2 (right column, vertical) has remainder.
-    Returns tuple of (question_boxes, numeric_question_indices).
-    """
+    """Segment the questions from the full image based on physical dimensions."""
     img_height, img_width = image.shape[:2]
     question_width_cm, question_height_cm = SIZEOF_QUESTION
 
