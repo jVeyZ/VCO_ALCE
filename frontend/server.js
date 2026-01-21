@@ -4,11 +4,24 @@ const path = require('path');
 const fs = require('fs/promises');
 const QRCode = require('qrcode');
 const puppeteer = require('puppeteer');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 5500;
 const __dirnameResolved = __dirname;
 const templatePath = path.join(__dirnameResolved, 'templates', 'answer-sheet.html');
+
+// Labeling paths
+const REPO_ROOT = path.join(__dirnameResolved, '..');
+const LABEL_QUEUE_DIR = path.join(REPO_ROOT, 'img', 'label_queue');
+const LABEL_ARCHIVE_DIR = path.join(LABEL_QUEUE_DIR, '_labeled');
+const LABEL_OUTPUT_DIR = path.join(REPO_ROOT, 'data', 'manual_digits');
+const LABEL_IMAGE_DIR = path.join(LABEL_OUTPUT_DIR, 'images');
+const LABEL_LOG_PATH = path.join(LABEL_OUTPUT_DIR, 'labels.jsonl');
+const SUPPORTED_IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.bmp']);
+const ALLOWED_DIGIT_LABELS = new Set(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
+const SEGMENT_SCRIPT = path.join(REPO_ROOT, 'src', 'segment_digits.py');
 
 app.use(cors());
 app.use(express.json({ limit: '5mb' }));
@@ -16,6 +29,108 @@ app.use(express.static(__dirnameResolved));
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirnameResolved, 'index.html'));
 });
+
+app.get('/labeler', (_req, res) => {
+  res.sendFile(path.join(__dirnameResolved, 'labeler.html'));
+});
+
+async function ensureLabelingDirs() {
+  await fs.mkdir(LABEL_QUEUE_DIR, { recursive: true });
+  await fs.mkdir(LABEL_ARCHIVE_DIR, { recursive: true });
+  await fs.mkdir(LABEL_IMAGE_DIR, { recursive: true });
+}
+
+async function readLabelLog() {
+  try {
+    const content = await fs.readFile(LABEL_LOG_PATH, 'utf8');
+    return content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+}
+
+async function appendLabelLog(entry) {
+  const line = `${JSON.stringify(entry)}\n`;
+  await fs.mkdir(LABEL_OUTPUT_DIR, { recursive: true });
+  await fs.appendFile(LABEL_LOG_PATH, line, 'utf8');
+}
+
+async function listQueueFiles() {
+  await ensureLabelingDirs();
+  const files = await fs.readdir(LABEL_QUEUE_DIR, { withFileTypes: true });
+  return files
+    .filter((f) => f.isFile())
+    .map((f) => f.name)
+    .filter((name) => SUPPORTED_IMAGE_EXTS.has(path.extname(name).toLowerCase()));
+}
+
+function runSegmentation(imagePath, mode = 'full') {
+  return new Promise((resolve, reject) => {
+    execFile('python', [SEGMENT_SCRIPT, imagePath, mode], { timeout: 15_000 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('Segmentation script failed:', error, stderr?.toString());
+        return reject(error);
+      }
+      try {
+        const parsed = JSON.parse(stdout.toString());
+        resolve(parsed);
+      } catch (parseErr) {
+        console.error('Failed to parse segmentation output:', parseErr);
+        reject(parseErr);
+      }
+    });
+  });
+}
+
+async function loadNextImage() {
+  const labeledEntries = await readLabelLog();
+  const labeledMap = new Map(); // key: source -> set of segment indices
+  labeledEntries.forEach((e) => {
+    const key = e.source;
+    if (!labeledMap.has(key)) labeledMap.set(key, new Set());
+    if (typeof e.segmentIndex === 'number') {
+      labeledMap.get(key).add(e.segmentIndex);
+    }
+  });
+
+  const queueFiles = await listQueueFiles();
+
+  for (const filename of queueFiles) {
+    const filePath = path.join(LABEL_QUEUE_DIR, filename);
+    const segmentation = await runSegmentation(filePath, 'full').catch(() => null);
+    if (!segmentation || !segmentation.segments) continue;
+
+    const already = labeledMap.get(filename) || new Set();
+    const pendingSegments = segmentation.segments.filter((s) => !already.has(s.index));
+
+    if (!pendingSegments.length) {
+      // Archive and continue to next file
+      await fs.rename(filePath, path.join(LABEL_ARCHIVE_DIR, filename)).catch(async () => {
+        await fs.unlink(filePath).catch(() => {});
+      });
+      continue;
+    }
+
+    const buffer = await fs.readFile(filePath);
+    const ext = path.extname(filename).toLowerCase().replace('.', '') || 'png';
+    const dataUrl = `data:image/${ext};base64,${buffer.toString('base64')}`;
+
+    return {
+      filename,
+      dataUrl,
+      remaining: queueFiles.length,
+      total: queueFiles.length,
+      segmentation: { ...segmentation, segments: pendingSegments },
+    };
+  }
+
+  return null;
+}
 
 function shuffle(array) {
   const copy = [...array];
@@ -173,6 +288,84 @@ async function renderPdf(html) {
 function sanitizeFileName(value = 'exam') {
   return value.replace(/[^a-z0-9-_]+/gi, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '').toLowerCase();
 }
+
+app.get('/api/label/next', async (_req, res) => {
+  try {
+    const next = await loadNextImage();
+    if (!next) {
+      return res.status(204).end();
+    }
+    return res.json(next);
+  } catch (error) {
+    console.error('Failed to load next image:', error);
+    return res.status(500).json({ message: 'Could not load next image.' });
+  }
+});
+
+app.post('/api/label/segment', async (req, res) => {
+  const { filename, label, segmentIndex, kind, imageData } = req.body || {};
+  if (!filename || typeof filename !== 'string') {
+    return res.status(400).json({ message: 'Missing filename.' });
+  }
+  if (!ALLOWED_DIGIT_LABELS.has(String(label))) {
+    return res.status(400).json({ message: 'Label must be a digit 0-9.' });
+  }
+  if (typeof segmentIndex !== 'number') {
+    return res.status(400).json({ message: 'Missing segmentIndex.' });
+  }
+  if (typeof imageData !== 'string' || !imageData.startsWith('data:image/')) {
+    return res.status(400).json({ message: 'Missing segment image data URL.' });
+  }
+
+  try {
+    await ensureLabelingDirs();
+
+    const sourcePath = path.join(LABEL_QUEUE_DIR, filename);
+    const sourceExists = await fs.stat(sourcePath).then(() => true).catch(() => false);
+    if (!sourceExists) {
+      return res.status(404).json({ message: 'Source image not found in queue.' });
+    }
+
+    const [, meta, b64] = imageData.match(/^data:(image\/[^;]+);base64,(.+)$/) || [];
+    if (!b64) {
+      return res.status(400).json({ message: 'Invalid image data.' });
+    }
+    const safeName = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}-seg${segmentIndex}-${sanitizeFileName(filename)}.png`;
+    const labelDir = path.join(LABEL_IMAGE_DIR, String(label));
+    await fs.mkdir(labelDir, { recursive: true });
+    const targetPath = path.join(labelDir, safeName);
+    await fs.writeFile(targetPath, Buffer.from(b64, 'base64'));
+
+    const entry = {
+      label: String(label),
+      source: filename,
+      segmentIndex,
+      kind: kind || 'segment',
+      savedAs: path.relative(REPO_ROOT, targetPath),
+      timestamp: new Date().toISOString(),
+    };
+    await appendLabelLog(entry);
+
+    // If all segments are labeled, archive the source image
+    const labeledEntries = await readLabelLog();
+    const labeledForFile = new Set(
+      labeledEntries.filter((e) => e.source === filename).map((e) => e.segmentIndex)
+    );
+    const segmentation = await runSegmentation(sourcePath, 'full').catch(() => null);
+    const pending = segmentation?.segments?.filter((s) => !labeledForFile.has(s.index)) || [];
+    if (!pending.length) {
+      await fs.rename(sourcePath, path.join(LABEL_ARCHIVE_DIR, filename)).catch(async () => {
+        await fs.unlink(sourcePath).catch(() => {});
+      });
+    }
+
+    const next = await loadNextImage();
+    return res.json({ message: 'Saved', next });
+  } catch (error) {
+    console.error('Failed to save label:', error);
+    return res.status(500).json({ message: 'Could not save label.' });
+  }
+});
 
 app.post('/api/generate-answer-sheet', async (req, res) => {
   const { blueprint, variantLabel } = req.body || {};

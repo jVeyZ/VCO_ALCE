@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Labeler | Dígitos 1-4-7</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+	<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700&display=swap" rel="stylesheet" />
+	<style>
+		:root {
+			--bg: radial-gradient(circle at 20% 20%, #eef6ff 0, #e6fff6 35%, #f8fafc 70%);
+			--panel: #ffffff;
+			--border: #d7dde5;
+			--text: #0f172a;
+			--muted: #4b5563;
+			--accent: #0ea5e9;
+			--accent-strong: #0284c7;
+			--success: #22c55e;
+			--danger: #ef4444;
+			font-family: 'Manrope', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+		}
+
+		* { box-sizing: border-box; }
+
+		body {
+			margin: 0;
+			min-height: 100vh;
+			background: var(--bg);
+			color: var(--text);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 32px;
+		}
+
+		.shell {
+			width: min(1200px, 100%);
+			background: var(--panel);
+			border: 1px solid var(--border);
+			box-shadow: 0 14px 40px rgba(15, 23, 42, 0.12);
+			border-radius: 16px;
+			padding: 24px;
+			display: grid;
+			grid-template-columns: 340px 1fr;
+			gap: 20px;
+		}
+
+		.sidebar {
+			display: grid;
+			gap: 16px;
+		}
+
+		.card {
+			border: 1px solid var(--border);
+			border-radius: 12px;
+			padding: 16px;
+			background: #ffffff;
+		}
+
+		h1 {
+			margin: 0 0 6px;
+			font-size: 24px;
+			letter-spacing: -0.01em;
+		}
+
+		p { margin: 0; color: var(--muted); }
+
+		.stat-row { display: flex; gap: 10px; align-items: center; }
+		.badge { padding: 6px 10px; border-radius: 8px; font-weight: 600; font-size: 13px; }
+		.badge.info { background: #e0f2fe; color: #075985; }
+		.badge.success { background: #dcfce7; color: #166534; }
+
+		.actions { display: grid; gap: 10px; grid-template-columns: repeat(5, 1fr); }
+		button {
+			border: none;
+			border-radius: 10px;
+			padding: 14px 12px;
+			font: inherit;
+			font-weight: 700;
+			cursor: pointer;
+			transition: transform 120ms ease, box-shadow 120ms ease, opacity 120ms ease;
+			background: #e2e8f0;
+			color: #0f172a;
+		}
+
+		button.primary { background: var(--accent); color: #ffffff; box-shadow: 0 10px 28px rgba(14, 165, 233, 0.25); }
+		button.primary:hover { background: var(--accent-strong); transform: translateY(-1px); }
+		button:active { transform: translateY(0); }
+		button:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+
+		.viewer {
+			border: 1px solid var(--border);
+			border-radius: 14px;
+			padding: 16px;
+			background: #f8fafc;
+			display: grid;
+			grid-template-rows: auto 1fr auto;
+			gap: 12px;
+		}
+
+		.viewer-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+		.viewer-body { display: grid; place-items: center; background: #ffffff; border: 1px dashed var(--border); border-radius: 10px; min-height: 420px; }
+		.image-stack { position: relative; width: 100%; display: grid; place-items: center; }
+		.viewer-body img { max-width: 100%; max-height: 480px; object-fit: contain; display: block; }
+		#segCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: none; pointer-events: none; }
+
+		.seg-thumbs { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px; margin-top: 12px; }
+		.seg-thumbs .thumb { border: 1px solid var(--border); border-radius: 8px; padding: 6px; background: #fff; text-align: center; }
+		.seg-thumbs img { width: 100%; height: 96px; object-fit: contain; display: block; }
+		.seg-thumbs .idx { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+		.key-hints { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
+		.kbd { border: 1px solid var(--border); padding: 4px 8px; border-radius: 6px; background: #ffffff; font-weight: 700; color: #0f172a; }
+
+		@media (max-width: 1024px) {
+			.shell { grid-template-columns: 1fr; }
+		}
+	</style>
+</head>
+<body>
+	<div class="shell">
+		<section class="sidebar">
+			<div class="card">
+				<h1>Etiquetar dígitos</h1>
+				<p>Presiona 1, 4 o 7 para guardar la etiqueta y avanzar. Los ejemplos se guardan para mezclarse con EMNIST en el próximo entrenamiento.</p>
+			</div>
+			<div class="card">
+				<div class="stat-row"><span class="badge info">Pendientes</span><span id="pendingCount">—</span></div>
+				<div class="stat-row" style="margin-top:8px;"><span class="badge success">Guardados</span><span id="savedInfo">—</span></div>
+			</div>
+			<div class="card">
+				<p style="margin-bottom:10px;">Atajos:</p>
+				<div class="key-hints">
+					<span><span class="kbd">1</span> Guardar como 1</span>
+					<span><span class="kbd">4</span> Guardar como 4</span>
+					<span><span class="kbd">7</span> Guardar como 7</span>
+					<span><span class="kbd">N</span> Siguiente sin guardar</span>
+				</div>
+			</div>
+		</section>
+
+		<section class="viewer">
+			<div class="viewer-head">
+				<div>
+					<strong id="fileLabel">Cargando cola…</strong>
+					<div id="status" style="color: var(--muted); font-size: 14px;">Busca imágenes en img/label_queue</div>
+				</div>
+				<div style="display:flex; gap:8px;">
+					<button id="skipButton" aria-label="Saltar segmento" title="Saltar al siguiente segmento">Saltar segmento</button>
+					<button id="skipImageButton" aria-label="Saltar imagen" title="Pasar a la siguiente imagen">Saltar imagen</button>
+				</div>
+			</div>
+			<div class="viewer-body">
+				<div class="image-stack">
+					<img id="preview" alt="Ejemplo" />
+					<canvas id="segCanvas"></canvas>
+				</div>
+				<div id="emptyState" style="display:none; text-align:center; color: var(--muted);">Sin imágenes pendientes. Añade recortes a img/label_queue.</div>
+			</div>
+			<div id="segThumbs" class="seg-thumbs"></div>
+			<div class="actions" id="digitButtons"></div>
+		</section>
+	</div>
+
+	<script>
+		const preview = document.getElementById('preview');
+		const fileLabel = document.getElementById('fileLabel');
+		const statusEl = document.getElementById('status');
+		const pendingEl = document.getElementById('pendingCount');
+		const savedEl = document.getElementById('savedInfo');
+		const emptyState = document.getElementById('emptyState');
+		const skipButton = document.getElementById('skipButton');
+		const skipImageButton = document.getElementById('skipImageButton');
+		const actionsContainer = document.getElementById('digitButtons');
+		const segCanvas = document.getElementById('segCanvas');
+		const segCtx = segCanvas.getContext('2d');
+		const segThumbs = document.getElementById('segThumbs');
+
+		let current = null;
+		let savedCount = 0;
+		let loading = false;
+		let previewNaturalWidth = 0;
+		let previewNaturalHeight = 0;
+		let currentSegments = [];
+		let segmentCursor = 0;
+
+		function buildDigitButtons() {
+			const digits = ['0','1','2','3','4','5','6','7','8','9'];
+			actionsContainer.innerHTML = digits.map((d) => `<button class="primary" data-label="${d}">Guardar ${d}</button>`).join('');
+			Array.from(actionsContainer.querySelectorAll('button')).forEach((btn) => {
+				btn.addEventListener('click', () => submitLabel(btn.dataset.label));
+			});
+		}
+
+		function setLoading(isLoading) {
+			loading = isLoading;
+			Array.from(actionsContainer.querySelectorAll('button')).forEach((btn) => { btn.disabled = isLoading || !current; });
+			skipButton.disabled = isLoading;
+			skipImageButton.disabled = isLoading;
+		}
+
+		function renderSegmentation(imageUrl, segmentation) {
+			if (!segmentation || !segmentation.segments || !segmentation.segments.length) {
+				segCanvas.style.display = 'none';
+				segThumbs.innerHTML = '';
+				return;
+			}
+
+			const img = new Image();
+			img.onload = () => {
+				previewNaturalWidth = img.width;
+				previewNaturalHeight = img.height;
+				const { width, height, segments } = segmentation;
+				segCanvas.width = width;
+				segCanvas.height = height;
+				segCtx.clearRect(0, 0, width, height);
+				segCtx.drawImage(img, 0, 0, width, height);
+				segCtx.strokeStyle = '#ef4444';
+				segCtx.lineWidth = 2;
+				segments.forEach((seg) => {
+					const [x, y, w, h] = seg.bbox || [];
+					if (w && h) segCtx.strokeRect(x, y, w, h);
+				});
+				segCanvas.style.display = 'block';
+				segThumbs.innerHTML = segments
+					.map((seg, i) => `<div class="thumb" data-idx="${i}"><img src="${seg.image}" alt="seg-${seg.index}" /><div class="idx">#${seg.index} (${seg.kind || ''})</div></div>`)
+					.join('');
+				Array.from(segThumbs.querySelectorAll('.thumb')).forEach((el, i) => {
+					el.addEventListener('click', () => {
+						segmentCursor = i;
+						renderCurrentSegment();
+					});
+				});
+			};
+			img.src = imageUrl;
+		}
+
+		function renderCurrentSegment() {
+			if (!currentSegments.length) {
+				statusEl.textContent = 'Sin segmentos pendientes';
+				return;
+			}
+			const seg = currentSegments[segmentCursor] || currentSegments[0];
+			statusEl.textContent = `Segmento ${segmentCursor + 1}/${currentSegments.length} (#${seg.index}, ${seg.kind || 'seg'})`;
+			// highlight thumbnail
+			Array.from(segThumbs.querySelectorAll('.thumb')).forEach((el, i) => {
+				el.style.outline = i === segmentCursor ? '2px solid var(--accent)' : 'none';
+			});
+			// optional: future highlight on canvas
+		}
+
+		async function fetchNext() {
+			setLoading(true);
+			try {
+				const res = await fetch('/api/label/next');
+				if (res.status === 204) {
+					current = null;
+					preview.style.display = 'none';
+					emptyState.style.display = 'block';
+					fileLabel.textContent = 'Cola vacia';
+					statusEl.textContent = 'Añade más recortes a img/label_queue y recarga.';
+					pendingEl.textContent = '0';
+					segCanvas.style.display = 'none';
+					segThumbs.innerHTML = '';
+					setLoading(false);
+					return;
+				}
+				const data = await res.json();
+				current = data;
+				currentSegments = data.segmentation?.segments || [];
+				segmentCursor = 0;
+				preview.src = data.dataUrl;
+				preview.style.display = 'block';
+				emptyState.style.display = 'none';
+				fileLabel.textContent = data.filename;
+				pendingEl.textContent = currentSegments.length;
+				statusEl.textContent = `Segmento 1/${currentSegments.length}`;
+				renderSegmentation(data.dataUrl, data.segmentation);
+				renderCurrentSegment();
+				setLoading(false);
+			} catch (err) {
+				statusEl.textContent = 'Error cargando imagen';
+				setLoading(false);
+			}
+		}
+
+		async function submitLabel(label) {
+			if (!current || loading || !currentSegments.length) return;
+			setLoading(true);
+			try {
+				const seg = currentSegments[segmentCursor];
+				const res = await fetch('/api/label/segment', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						filename: current.filename,
+						label,
+						segmentIndex: seg.index,
+						kind: seg.kind,
+						imageData: seg.image,
+					})
+				});
+				if (!res.ok) {
+					statusEl.textContent = 'No se pudo guardar.';
+					setLoading(false);
+					return;
+				}
+				const data = await res.json();
+				savedCount += 1;
+				savedEl.textContent = `${savedCount} guardados en la sesión`;
+				// Remove labeled segment locally
+				currentSegments.splice(segmentCursor, 1);
+				if (!currentSegments.length) {
+					if (data.next) {
+						current = data.next;
+						currentSegments = data.next.segmentation?.segments || [];
+						segmentCursor = 0;
+						preview.src = data.next.dataUrl;
+						preview.style.display = 'block';
+						emptyState.style.display = 'none';
+						fileLabel.textContent = data.next.filename;
+						pendingEl.textContent = currentSegments.length;
+						statusEl.textContent = currentSegments.length ? `Segmento 1/${currentSegments.length}` : 'Sin segmentos';
+						renderSegmentation(data.next.dataUrl, data.next.segmentation);
+						renderCurrentSegment();
+					} else {
+						current = null;
+						preview.style.display = 'none';
+						emptyState.style.display = 'block';
+						fileLabel.textContent = 'Cola vacia';
+						statusEl.textContent = 'Añade más recortes a img/label_queue y recarga.';
+						pendingEl.textContent = '0';
+						segCanvas.style.display = 'none';
+						segThumbs.innerHTML = '';
+					}
+				} else {
+					if (segmentCursor >= currentSegments.length) segmentCursor = 0;
+					pendingEl.textContent = currentSegments.length;
+					renderSegmentation(preview.src, { segments: currentSegments });
+					renderCurrentSegment();
+				}
+			} catch (err) {
+				statusEl.textContent = 'Error al guardar.';
+			} finally {
+				setLoading(false);
+			}
+		}
+
+		skipButton.addEventListener('click', () => {
+			if (!currentSegments.length) return fetchNext();
+			segmentCursor = (segmentCursor + 1) % currentSegments.length;
+			renderCurrentSegment();
+		});
+		skipImageButton.addEventListener('click', fetchNext);
+
+			document.addEventListener('keydown', (event) => {
+			if (['0','1','2','3','4','5','6','7','8','9'].includes(event.key)) {
+				event.preventDefault();
+				submitLabel(event.key);
+			}
+			if (event.key === 'n' || event.key === 'N' || event.key === 'ArrowRight') {
+				event.preventDefault();
+				if (currentSegments.length) {
+					segmentCursor = (segmentCursor + 1) % currentSegments.length;
+					renderCurrentSegment();
+				} else {
+					fetchNext();
+				}
+			}
+		});
+
+		buildDigitButtons();
+		fetchNext();
+	</script>
+</body>
+</html>
